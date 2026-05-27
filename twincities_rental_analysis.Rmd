@@ -1,0 +1,230 @@
+---
+title: "Twin Cities Rental Price Analysis"
+author: "Ha Phan"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Load Libraries
+```{r warning=FALSE, message=FALSE}
+library(DBI)
+library(RSQLite)
+library(ggplot2)
+library(dplyr)
+library(corrplot)
+library(psych)
+library(knitr)
+```
+
+#### Connect to Database
+```{r}
+conn <- dbConnect(SQLite(), 
+  "/Users/crystalphan/Desktop/Apartent rental project/twincities_rental.db")
+
+df <- dbGetQuery(conn, "SELECT * FROM annual_summary")
+cat("Rows loaded:", nrow(df), "\n")
+cat("Columns:", ncol(df), "\n")
+```
+
+#### Preview Data
+```{r}
+head(df)
+```
+
+#### Descriptive Statistics
+```{r}
+describe(df[, c("avg_rent", "rent_studio", "rent_1br", 
+                "rent_2br", "rent_3br", "rent_4br")])
+```
+
+#### Chart 1: Average Rent by Year (Twin Cities Trend)
+```{r}
+# Calculate average rent per year across all zip codes
+yearly <- df %>%
+  group_by(year) %>%
+  summarise(avg_rent = mean(avg_rent))
+
+# Plot the trend line
+ggplot(yearly, aes(x = year, y = avg_rent)) +
+  geom_line(color = "#185FA5", size = 1.2) +
+  geom_point(color = "#185FA5", size = 3) +
+  labs(
+    title = "Average Rent Trend — Twin Cities (2015–2026)",
+    x = "Year",
+    y = "Average Rent ($)"
+  ) +
+  theme_minimal()
+```
+
+#### Chart 2: Rent Distribution by Zip Code (2025)
+```{r}
+# Filter to 2025 only
+df_2025 <- df %>% filter(year == 2025)
+
+# Histogram of rent distribution
+ggplot(df_2025, aes(x = avg_rent)) +
+  geom_histogram(bins = 20, fill = "#185FA5", color = "white") +
+  labs(
+    title = "Distribution of Average Rent by Zip Code (2025)",
+    x = "Average Rent ($)",
+    y = "Number of Zip Codes"
+  ) +
+  theme_minimal()
+```
+
+#### Chart 3: Top 10 Most Expensive vs Affordable Zip Codes (2025)
+```{r fig.height=6}
+# Get top 5 most expensive and top 5 most affordable
+top5    <- df_2025 %>% arrange(desc(avg_rent)) %>% head(5)
+bottom5 <- df_2025 %>% arrange(avg_rent) %>% head(5)
+combined <- rbind(top5, bottom5)
+
+ggplot(combined, aes(x = reorder(regionname, avg_rent), 
+                      y = avg_rent, fill = avg_rent)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "#B5D4F4", high = "#0C447C") +
+  coord_flip() +
+  labs(
+    title = "Most Expensive vs Most Affordable Zip Codes (2025)",
+    x = "Zip Code",
+    y = "Average Rent ($)",
+    fill = "Rent ($)"
+  ) +
+  theme_minimal()
+```
+
+#### Chart 4: Rent by Bedroom Size (HUD Fair Market Rents)
+```{r}
+# Average HUD rent by bedroom size across all zip codes
+bedroom_avg <- df %>%
+  summarise(
+    Studio   = mean(rent_studio),
+    `1 BR`   = mean(rent_1br),
+    `2 BR`   = mean(rent_2br),
+    `3 BR`   = mean(rent_3br),
+    `4 BR`   = mean(rent_4br)
+  ) %>%
+  tidyr::pivot_longer(everything(), 
+                       names_to = "bedroom", 
+                       values_to = "avg_rent")
+
+ggplot(bedroom_avg, aes(x = bedroom, y = avg_rent, fill = bedroom)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Average Fair Market Rent by Bedroom Size — Minneapolis MSA",
+    x = "Bedroom Size",
+    y = "Average Rent ($)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+#### Correlation Matrix
+```{r}
+# Select numeric columns for correlation
+cor_data <- df[, c("avg_rent", "rent_studio", "rent_1br", 
+                    "rent_2br", "rent_3br", "rent_4br")]
+
+# Calculate correlation matrix
+cor_matrix <- cor(cor_data, use = "complete.obs")
+
+# Plot it
+corrplot(cor_matrix, 
+         method = "color",
+         type = "upper",
+         tl.col = "black",
+         tl.srt = 45,
+         addCoef.col = "black",
+         number.cex = 0.7,
+         title = "Correlation Matrix — Rent Variables",
+         mar = c(0,0,1,0))
+```
+
+#### Close Database Connection
+```{r}
+dbDisconnect(conn)
+cat("Database connection closed.")
+```
+
+#### Regression Model: What Predicts Rent in the Twin Cities?
+```{r}
+# We want to answer: which factors predict higher rent?
+# Our model: avg_rent ~ year + bedroom sizes
+
+# First filter to complete rows only (no missing values)
+df_model <- df %>%
+  filter(!is.na(avg_rent) & !is.na(rent_1br))
+
+cat("Rows used in model:", nrow(df_model), "\n")
+```
+
+#### Build the Regression Model
+```{r}
+# lm() = linear model
+# avg_rent is what we are predicting (dependent variable)
+# year, rent_1br, rent_2br, rent_3br are our predictors (independent variables)
+
+model <- lm(avg_rent ~ year + rent_1br + rent_2br + rent_3br, 
+            data = df_model)
+
+# Show the full results
+summary(model)
+```
+
+#### Interpret the Results
+```{r}
+# Extract key numbers from the model
+r_squared  <- summary(model)$r.squared
+adj_r2     <- summary(model)$adj.r.squared
+f_stat     <- summary(model)$fstatistic[1]
+
+cat("R-squared:         ", round(r_squared, 4), "\n")
+cat("Adjusted R-squared:", round(adj_r2, 4), "\n")
+cat("F-statistic:       ", round(f_stat, 2), "\n")
+cat("\n")
+cat("What this means:\n")
+cat("  R-squared close to 1.0 = model explains rent variation well\n")
+cat("  R-squared close to 0.0 = model explains very little\n")
+```
+
+#### Check Model Assumptions
+```{r fig.height=8}
+# These 4 plots check if our regression assumptions are met
+# This is the same check you did in your MPG project!
+par(mfrow = c(2, 2))   # arrange 4 plots in a 2x2 grid
+plot(model)
+par(mfrow = c(1, 1))   # reset back to normal
+```
+
+#### Predicted vs Actual Rent
+```{r}
+# Add predicted values to our data
+df_model$predicted_rent <- predict(model)
+
+# Plot predicted vs actual
+ggplot(df_model, aes(x = predicted_rent, y = avg_rent)) +
+  geom_point(color = "#185FA5", alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, 
+              color = "red", linetype = "dashed") +
+  labs(
+    title = "Predicted vs Actual Rent",
+    subtitle = "Points close to the red line = good predictions",
+    x = "Predicted Rent ($)",
+    y = "Actual Rent ($)"
+  ) +
+  theme_minimal()
+```
+
+#### Key Findings
+```{r}
+# Show the coefficients in a clean table
+coef_table <- as.data.frame(summary(model)$coefficients)
+coef_table <- round(coef_table, 4)
+kable(coef_table, 
+      caption = "Regression Coefficients",
+      col.names = c("Estimate", "Std Error", "t Value", "p Value"))
+```
